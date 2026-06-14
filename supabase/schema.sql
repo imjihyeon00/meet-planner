@@ -6,6 +6,7 @@ create table if not exists public.groups (
   invite_code text not null unique,
   date_start date not null,
   date_end date not null,
+  allowed_weekdays integer[] not null default '{0,1,2,3,4,5,6}',
   time_start text not null,
   time_end text not null,
   slot_minutes integer not null check (slot_minutes in (30, 60)),
@@ -15,6 +16,9 @@ create table if not exists public.groups (
   finalized_slot jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table public.groups
+add column if not exists allowed_weekdays integer[] not null default '{0,1,2,3,4,5,6}';
 
 create table if not exists public.participants (
   id uuid primary key,

@@ -72,6 +72,7 @@ type GroupRow = {
   invite_code: string;
   date_start: string;
   date_end: string;
+  allowed_weekdays: number[] | null;
   time_start: string;
   time_end: string;
   slot_minutes: 30 | 60;
@@ -108,6 +109,7 @@ function fromGroupRow(row: GroupRow): Group {
     inviteCode: row.invite_code,
     dateStart: row.date_start,
     dateEnd: row.date_end,
+    allowedWeekdays: row.allowed_weekdays?.length ? row.allowed_weekdays : [0, 1, 2, 3, 4, 5, 6],
     timeStart: row.time_start,
     timeEnd: row.time_end,
     slotMinutes: row.slot_minutes,
@@ -128,6 +130,7 @@ function toGroupRow(group: Group) {
     invite_code: group.inviteCode,
     date_start: group.dateStart,
     date_end: group.dateEnd,
+    allowed_weekdays: group.allowedWeekdays,
     time_start: group.timeStart,
     time_end: group.timeEnd,
     slot_minutes: group.slotMinutes,

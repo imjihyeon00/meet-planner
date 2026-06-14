@@ -9,6 +9,7 @@ export type Group = {
   inviteCode: string;
   dateStart: string;
   dateEnd: string;
+  allowedWeekdays: number[];
   timeStart: string;
   timeEnd: string;
   slotMinutes: 30 | 60;

@@ -24,6 +24,15 @@ export function dateRange(start: string, end: string) {
   return result;
 }
 
+export function candidateDates(group: Pick<Group, "dateStart" | "dateEnd" | "allowedWeekdays">) {
+  const allowed = group.allowedWeekdays?.length ? group.allowedWeekdays : [0, 1, 2, 3, 4, 5, 6];
+  return dateRange(group.dateStart, group.dateEnd).filter((date) => allowed.includes(weekdayFromDateKey(date)));
+}
+
+export function weekdayFromDateKey(value: string) {
+  return parseDateKey(value).getDay();
+}
+
 function parseDateKey(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   return new Date(year, month - 1, day);
@@ -78,7 +87,10 @@ export function buildRecommendations(
   participants: Participant[],
   availability: Availability[],
 ) {
-  const counts = availabilityCounts(availability.filter((slot) => slot.groupId === group.id));
+  const candidateDateSet = new Set(candidateDates(group));
+  const counts = availabilityCounts(
+    availability.filter((slot) => slot.groupId === group.id && candidateDateSet.has(slot.date)),
+  );
   const participantIds = participants.filter((item) => item.groupId === group.id).map((item) => item.id);
   const slotEndLookup = new Map(timeSlots(group).map((slot) => [slot.start, slot.end]));
 

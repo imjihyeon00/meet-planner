@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   availabilityCounts,
   buildRecommendations,
+  candidateDates,
   dateRange,
   displayName,
   isDeadlinePassed,
@@ -41,6 +42,21 @@ import type { AppData, Availability, Group, Participant, Recommendation, Visibil
 import { cn } from "@/lib/utils";
 
 const emptyData: AppData = { groups: [], participants: [], availability: [] };
+const ALL_WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "월" },
+  { value: 2, label: "화" },
+  { value: 3, label: "수" },
+  { value: 4, label: "목" },
+  { value: 5, label: "금" },
+  { value: 6, label: "토" },
+  { value: 0, label: "일" },
+];
+const WEEKDAY_PRESETS = [
+  { label: "전체", values: ALL_WEEKDAYS },
+  { label: "평일", values: [1, 2, 3, 4, 5] },
+  { label: "주말", values: [0, 6] },
+];
 
 export function PlannerApp() {
   const [data, setData] = useState<AppData>(emptyData);
@@ -134,11 +150,16 @@ export function PlannerApp() {
     const slotMinutes = Number(formData.get("slotMinutes")) as 30 | 60;
     const deadline = String(formData.get("deadline"));
     const visibility = String(formData.get("visibility")) as Visibility;
+    const allowedWeekdays = formData
+      .getAll("allowedWeekdays")
+      .map((value) => Number(value))
+      .filter((value) => ALL_WEEKDAYS.includes(value));
 
     if (!title) return setError("그룹명을 입력해 주세요.");
     if (dateStart > dateEnd) return setError("후보 종료일은 시작일 이후여야 합니다.");
     if (toMinutes(timeStart) >= toMinutes(timeEnd)) return setError("종료 시간은 시작 시간 이후여야 합니다.");
     if (dateRange(dateStart, dateEnd).length > 45) return setError("후보 날짜 범위는 45일 이내로 설정해 주세요.");
+    if (!allowedWeekdays.length) return setError("후보 요일을 하나 이상 선택해 주세요.");
 
     const group: Group = {
       id: crypto.randomUUID(),
@@ -148,6 +169,7 @@ export function PlannerApp() {
       inviteCode: createInviteCode(),
       dateStart,
       dateEnd,
+      allowedWeekdays,
       timeStart,
       timeEnd,
       slotMinutes,
@@ -157,6 +179,10 @@ export function PlannerApp() {
       createdAt: new Date().toISOString(),
       finalizedSlot: null,
     };
+
+    if (!candidateDates(group).length) {
+      return setError("선택한 날짜 범위 안에 후보 요일이 없습니다.");
+    }
 
     try {
       await upsertGroup(group);
@@ -366,6 +392,8 @@ function HomeView({
   handleJoin: (formData: FormData) => void;
   openGroup: (group: Group) => void;
 }) {
+  const [selectedWeekdays, setSelectedWeekdays] = useState<number[]>(ALL_WEEKDAYS);
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
       <section className="surface overflow-hidden">
@@ -406,6 +434,7 @@ function HomeView({
                 <Input name="dateEnd" type="date" required defaultValue={today(10)} />
               </label>
             </div>
+            <WeekdayPicker selected={selectedWeekdays} onChange={setSelectedWeekdays} />
             <div className="grid gap-4 sm:grid-cols-3">
               <label className="label">
                 시작 시간
@@ -483,6 +512,74 @@ function HomeView({
   );
 }
 
+function WeekdayPicker({
+  selected,
+  onChange,
+}: {
+  selected: number[];
+  onChange: (weekdays: number[]) => void;
+}) {
+  const normalized = normalizeWeekdays(selected);
+
+  function applyPreset(values: number[]) {
+    onChange(normalizeWeekdays(values));
+  }
+
+  function toggleWeekday(value: number) {
+    const next = normalized.includes(value)
+      ? normalized.filter((weekday) => weekday !== value)
+      : [...normalized, value];
+    if (!next.length) return;
+    onChange(normalizeWeekdays(next));
+  }
+
+  return (
+    <fieldset className="grid gap-3">
+      <legend className="text-sm font-semibold text-foreground">후보 요일</legend>
+      <div className="flex flex-wrap gap-2">
+        {WEEKDAY_PRESETS.map((preset) => {
+          const active = sameWeekdays(normalized, preset.values);
+          return (
+            <Button
+              key={preset.label}
+              type="button"
+              size="sm"
+              variant={active ? "default" : "outline"}
+              onClick={() => applyPreset(preset.values)}
+            >
+              {preset.label}
+            </Button>
+          );
+        })}
+      </div>
+      <div className="grid grid-cols-7 gap-2" aria-label="후보 요일 직접 선택">
+        {WEEKDAY_OPTIONS.map((weekday) => {
+          const checked = normalized.includes(weekday.value);
+          return (
+            <label
+              key={weekday.value}
+              className={cn(
+                "grid h-10 cursor-pointer place-items-center rounded-md border text-sm font-black transition-colors",
+                checked ? "border-primary bg-primary text-primary-foreground" : "border-border bg-white hover:bg-muted",
+              )}
+            >
+              <input
+                className="sr-only"
+                type="checkbox"
+                name="allowedWeekdays"
+                value={weekday.value}
+                checked={checked}
+                onChange={() => toggleWeekday(weekday.value)}
+              />
+              {weekday.label}
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 function GroupView(props: {
   group: Group;
   participants: Participant[];
@@ -529,6 +626,7 @@ function GroupView(props: {
           <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">{group.description || "설명이 없는 약속입니다."}</p>
           <div className="mt-5 flex flex-wrap gap-2 text-xs font-semibold text-slate-700">
             <span className="rounded-md bg-muted px-2.5 py-1.5">{formatDate(group.dateStart)} - {formatDate(group.dateEnd)}</span>
+            <span className="rounded-md bg-muted px-2.5 py-1.5">{formatAllowedWeekdays(group.allowedWeekdays)}</span>
             <span className="rounded-md bg-muted px-2.5 py-1.5">{group.timeStart} - {group.timeEnd}</span>
             <span className="rounded-md bg-muted px-2.5 py-1.5">{group.slotMinutes}분 단위</span>
             <span className="rounded-md bg-muted px-2.5 py-1.5">마감 {formatDateTime(group.deadline)}</span>
@@ -648,7 +746,7 @@ function ScheduleEditor(props: {
   saveSlots: () => void;
 }) {
   const { group, activeParticipant, participants, draftSlots, locked, dragMode, setDragMode, toggleDraft, clearDraft, saveSlots } = props;
-  const dates = dateRange(group.dateStart, group.dateEnd);
+  const dates = candidateDates(group);
   const slots = timeSlots(group);
 
   return (
@@ -753,7 +851,7 @@ function RowSlots(props: {
 }
 
 function Heatmap({ group, participants, availability }: { group: Group; participants: Participant[]; availability: Availability[] }) {
-  const dates = dateRange(group.dateStart, group.dateEnd);
+  const dates = candidateDates(group);
   const slots = timeSlots(group);
   const counts = availabilityCounts(availability);
   const max = Math.max(1, participants.length);
@@ -916,4 +1014,21 @@ function formatDateFull(date: string) {
 
 function formatDateTime(date: string) {
   return new Intl.DateTimeFormat("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(date));
+}
+
+function normalizeWeekdays(values: number[]) {
+  return ALL_WEEKDAYS.filter((weekday) => values.includes(weekday));
+}
+
+function sameWeekdays(a: number[], b: number[]) {
+  const left = normalizeWeekdays(a);
+  const right = normalizeWeekdays(b);
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function formatAllowedWeekdays(values: number[] = ALL_WEEKDAYS) {
+  const normalized = normalizeWeekdays(values.length ? values : ALL_WEEKDAYS);
+  const preset = WEEKDAY_PRESETS.find((item) => sameWeekdays(normalized, item.values));
+  if (preset) return `후보 요일 ${preset.label}`;
+  return `후보 요일 ${WEEKDAY_OPTIONS.filter((item) => normalized.includes(item.value)).map((item) => item.label).join(", ")}`;
 }
