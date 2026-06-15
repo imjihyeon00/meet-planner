@@ -3,22 +3,28 @@
 @tailwind utilities;
 
 :root {
-  --background: 210 40% 98%;
-  --foreground: 222 47% 11%;
-  --muted: 210 32% 93%;
-  --muted-foreground: 215 18% 39%;
-  --border: 214 28% 86%;
-  --input: 214 28% 86%;
-  --ring: 174 72% 38%;
-  --primary: 174 72% 34%;
+  --background: 210 17% 98%;
+  --foreground: 210 11% 15%;
+  --muted: 210 17% 95%;
+  --muted-foreground: 210 7% 45%;
+  --border: 210 14% 89%;
+  --input: 210 14% 89%;
+  --ring: 346 67% 44%;
+  --primary: 346 67% 44%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 217 91% 95%;
-  --secondary-foreground: 222 47% 16%;
-  --accent: 43 96% 56%;
-  --accent-foreground: 222 47% 11%;
-  --destructive: 356 76% 48%;
+  --secondary: 210 17% 95%;
+  --secondary-foreground: 210 10% 26%;
+  --accent: 205 73% 46%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 62% 48%;
   --destructive-foreground: 0 0% 100%;
   --radius: 8px;
+  --success: #27ac84;
+  --success-bg: #e2fbef;
+  --warning: #f59e0b;
+  --warning-bg: #fdf2c6;
+  --complete: #2675c3;
+  --complete-bg: #e2effd;
 }
 
 * {
@@ -27,11 +33,9 @@
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 12% 12%, rgb(20 184 166 / 0.12), transparent 24rem),
-    radial-gradient(circle at 90% 6%, rgb(245 158 11 / 0.12), transparent 24rem),
-    hsl(var(--background));
+  background: hsl(var(--background));
   color: hsl(var(--foreground));
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 button,
@@ -44,23 +48,24 @@ select {
 .surface {
   min-width: 0;
   border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-  background: rgb(255 255 255 / 0.92);
-  box-shadow: 0 18px 48px rgb(15 23 42 / 0.07);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: none;
 }
 
 .label {
   display: grid;
-  gap: 0.45rem;
+  min-width: 0;
+  gap: 0.4rem;
   color: hsl(var(--foreground));
   font-size: 0.875rem;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .eyebrow {
   color: hsl(var(--primary));
   font-size: 0.75rem;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
 }
@@ -73,4 +78,44 @@ select {
 .slot-cell {
   min-width: 5.75rem;
   min-height: 3rem;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  padding: 0.375rem 0.625rem;
+  color: hsl(var(--secondary-foreground));
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 0.3125rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.status-badge-success {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.status-badge-warning {
+  background: var(--warning-bg);
+  color: #a15c04;
+}
+
+.status-badge-complete {
+  background: var(--complete-bg);
+  color: var(--complete);
 }

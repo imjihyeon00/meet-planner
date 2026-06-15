@@ -57,9 +57,21 @@ const WEEKDAY_PRESETS = [
   { label: "평일", values: [1, 2, 3, 4, 5] },
   { label: "주말", values: [0, 6] },
 ];
+const LOCAL_ACCESS_KEY = "meet-planner-local-access-v1";
+
+type LocalAccess = {
+  creators: Record<string, string>;
+  participants: Record<string, string>;
+};
+
+const emptyLocalAccess: LocalAccess = {
+  creators: {},
+  participants: {},
+};
 
 export function PlannerApp() {
   const [data, setData] = useState<AppData>(emptyData);
+  const [localAccess, setLocalAccess] = useState<LocalAccess>(emptyLocalAccess);
   const [activeInvite, setActiveInvite] = useState("");
   const [activeParticipantId, setActiveParticipantId] = useState("");
   const [draftSlots, setDraftSlots] = useState<Set<string>>(new Set());
@@ -70,6 +82,7 @@ export function PlannerApp() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLocalAccess(loadLocalAccess());
     loadAppData()
       .then(setData)
       .catch((cause: Error) => setError(cause.message))
@@ -122,6 +135,34 @@ export function PlannerApp() {
     [activeParticipantId, groupParticipants],
   );
 
+  const isCreator = Boolean(
+    activeGroup && localAccess.creators[activeGroup.id] === activeGroup.creatorKey,
+  );
+
+  useEffect(() => {
+    if (!activeGroup) {
+      setActiveParticipantId("");
+      setDraftSlots(new Set());
+      setDirty(false);
+      return;
+    }
+
+    const storedParticipantId = localAccess.participants[activeGroup.id];
+    const participant = groupParticipants.find((item) => item.id === storedParticipantId);
+    if (!participant) {
+      setActiveParticipantId("");
+      setDraftSlots(new Set());
+      setDirty(false);
+      return;
+    }
+
+    if (activeParticipantId !== participant.id) {
+      setActiveParticipantId(participant.id);
+      setDraftSlots(participantSlots(data.availability, participant.id));
+      setDirty(false);
+    }
+  }, [activeGroup, activeParticipantId, data.availability, groupParticipants, localAccess.participants]);
+
   async function commit(next: AppData) {
     setData(next);
     await saveLocalData(next);
@@ -138,6 +179,24 @@ export function PlannerApp() {
     setActiveParticipantId("");
     setDraftSlots(new Set());
     setDirty(false);
+  }
+
+  function rememberCreator(group: Group) {
+    const next = {
+      ...localAccess,
+      creators: { ...localAccess.creators, [group.id]: group.creatorKey },
+    };
+    setLocalAccess(next);
+    saveLocalAccess(next);
+  }
+
+  function rememberParticipant(groupId: string, participantId: string) {
+    const next = {
+      ...localAccess,
+      participants: { ...localAccess.participants, [groupId]: participantId },
+    };
+    setLocalAccess(next);
+    saveLocalAccess(next);
   }
 
   async function handleCreate(formData: FormData) {
@@ -187,6 +246,7 @@ export function PlannerApp() {
     try {
       await upsertGroup(group);
       await commit({ ...data, groups: [group, ...data.groups] });
+      rememberCreator(group);
       window.history.replaceState(null, "", `${window.location.pathname}#invite=${group.inviteCode}`);
       setActiveInvite(group.inviteCode);
       showMessage("그룹을 생성했습니다.");
@@ -213,21 +273,44 @@ export function PlannerApp() {
     const name = String(formData.get("name") || "").trim();
     if (!name) return;
 
-    const participant: Participant = {
-      id: crypto.randomUUID(),
-      groupId: activeGroup.id,
-      name,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    const storedParticipant = groupParticipants.find(
+      (item) => item.id === localAccess.participants[activeGroup.id],
+    );
+    const sameNameParticipant = groupParticipants.find((item) => item.name === name);
+    if (!storedParticipant && sameNameParticipant) {
+      setError("이미 사용 중인 닉네임입니다. 다른 닉네임을 입력해 주세요.");
+      return;
+    }
+
+    const baseParticipant = storedParticipant;
+    const participant: Participant = baseParticipant
+      ? {
+          ...baseParticipant,
+          name,
+          updatedAt: new Date().toISOString(),
+        }
+      : {
+          id: crypto.randomUUID(),
+          groupId: activeGroup.id,
+          name,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
 
     try {
       await upsertParticipant(participant);
-      const next = { ...data, participants: [...data.participants, participant] };
+      const next = {
+        ...data,
+        participants: baseParticipant
+          ? data.participants.map((item) => (item.id === participant.id ? participant : item))
+          : [...data.participants, participant],
+      };
       await commit(next);
+      rememberParticipant(activeGroup.id, participant.id);
       setActiveParticipantId(participant.id);
-      setDraftSlots(new Set());
+      setDraftSlots(participantSlots(data.availability, participant.id));
       setDirty(false);
+      showMessage(baseParticipant ? "기존 참여자 정보로 이동했습니다." : "참여자를 등록했습니다.");
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "참여자 저장에 실패했습니다.");
@@ -235,6 +318,11 @@ export function PlannerApp() {
   }
 
   function selectParticipant(participant: Participant) {
+    if (!activeGroup || localAccess.participants[activeGroup.id] !== participant.id) {
+      showMessage("본인이 등록한 일정만 수정할 수 있습니다.");
+      return;
+    }
+
     setActiveParticipantId(participant.id);
     setDraftSlots(
       new Set(
@@ -305,6 +393,10 @@ export function PlannerApp() {
 
   async function finalize(slot: Recommendation) {
     if (!activeGroup) return;
+    if (!isCreator) {
+      setError("최종 일정 확정은 방을 만든 사람만 할 수 있습니다.");
+      return;
+    }
     await updateGroup({ ...activeGroup, finalizedSlot: slot, status: "closed" });
     showMessage("최종 일정을 확정했습니다.");
   }
@@ -315,10 +407,10 @@ export function PlannerApp() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-30 border-b border-border/80 bg-background/88 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-border bg-white/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <button className="flex items-center gap-3 text-left" onClick={goHome} aria-label="메인 화면으로 이동">
-            <span className="grid h-10 w-10 place-items-center rounded-md bg-primary text-primary-foreground">
+            <span className="grid h-10 w-10 place-items-center rounded-[10px] bg-primary text-primary-foreground">
               <CalendarCheck size={20} />
             </span>
             <span>
@@ -337,12 +429,12 @@ export function PlannerApp() {
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:py-8">
         {error ? (
-          <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <div className="mb-4 rounded-[10px] border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-semibold text-destructive">
             {error}
           </div>
         ) : null}
         {toast ? (
-          <div className="fixed right-4 top-20 z-50 rounded-md bg-foreground px-4 py-3 text-sm font-semibold text-background shadow-panel">
+          <div className="fixed right-4 top-20 z-50 rounded-[10px] bg-foreground px-4 py-3 text-sm font-semibold text-background shadow-panel">
             {toast}
           </div>
         ) : null}
@@ -352,6 +444,7 @@ export function PlannerApp() {
             participants={groupParticipants}
             availability={groupAvailability}
             activeParticipant={activeParticipant}
+            isCreator={isCreator}
             draftSlots={draftSlots}
             dragMode={dragMode}
             setDragMode={setDragMode}
@@ -398,15 +491,25 @@ function HomeView({
     <div className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
       <section className="surface overflow-hidden">
         <div className="grid gap-0 lg:grid-cols-[0.8fr_1.2fr]">
-          <div className="border-b border-border bg-slate-950 p-6 text-white lg:border-b-0 lg:border-r">
-            <p className="eyebrow text-amber-300">MVP 일정 조율</p>
-            <h1 className="mt-3 text-3xl font-black leading-tight sm:text-4xl">친구들이 가능한 시간을 모아 최적 시간을 고릅니다.</h1>
-            <div className="mt-8 grid grid-cols-4 gap-2" aria-hidden="true">
+          <div className="border-b border-border bg-white p-6 lg:border-b-0 lg:border-r">
+            <p className="eyebrow">MVP 일정 조율</p>
+            <h1 className="mt-3 text-3xl font-semibold leading-tight text-foreground sm:text-4xl">친구들이 가능한 시간을 모아 최적 시간을 고릅니다.</h1>
+            <div className="mt-6 grid gap-3 text-sm font-semibold text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <UsersRound size={17} className="text-primary" />
+                <span>초대 링크로 빠르게 참여</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Clock size={17} className="text-primary" />
+                <span>요일과 시간 단위까지 후보 제한</span>
+              </div>
+            </div>
+            <div className="mt-8 grid grid-cols-4 gap-2 rounded-[12px] bg-muted p-2" aria-hidden="true">
               {Array.from({ length: 16 }).map((_, index) => (
                 <span
                   key={index}
                   className={cn(
-                    "h-12 rounded-md border border-white/15 bg-white/10",
+                    "h-12 rounded-[8px] border border-border bg-white",
                     [2, 5, 6, 10, 14].includes(index) && "bg-primary",
                     [7, 11].includes(index) && "bg-amber-400",
                   )}
@@ -424,7 +527,7 @@ function HomeView({
               약속 설명
               <Textarea name="description" placeholder="장소 후보, 모임 목적 등을 적어주세요." />
             </label>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <label className="label">
                 후보 시작일
                 <Input name="dateStart" type="date" required defaultValue={today(3)} />
@@ -435,7 +538,7 @@ function HomeView({
               </label>
             </div>
             <WeekdayPicker selected={selectedWeekdays} onChange={setSelectedWeekdays} />
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
               <label className="label">
                 시작 시간
                 <Input name="timeStart" type="time" required defaultValue="10:00" />
@@ -452,7 +555,7 @@ function HomeView({
                 </Select>
               </label>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <label className="label">
                 마감일
                 <Input name="deadline" type="datetime-local" required defaultValue={`${today(2)}T20:00`} />
@@ -492,7 +595,7 @@ function HomeView({
             {groups.filter((group) => group.status !== "deleted").slice(0, 7).map((group) => (
               <button
                 key={group.id}
-                className="flex items-center justify-between rounded-md border border-border bg-white px-3 py-3 text-left hover:bg-muted"
+                className="flex items-center justify-between rounded-[10px] border border-border bg-white px-3 py-3 text-left transition-colors hover:bg-muted"
                 onClick={() => openGroup(group)}
               >
                 <span>
@@ -559,7 +662,7 @@ function WeekdayPicker({
             <label
               key={weekday.value}
               className={cn(
-                "grid h-10 cursor-pointer place-items-center rounded-md border text-sm font-black transition-colors",
+                "grid h-10 cursor-pointer place-items-center rounded-[8px] border text-sm font-black transition-colors",
                 checked ? "border-primary bg-primary text-primary-foreground" : "border-border bg-white hover:bg-muted",
               )}
             >
@@ -585,6 +688,7 @@ function GroupView(props: {
   participants: Participant[];
   availability: Availability[];
   activeParticipant: Participant | null;
+  isCreator: boolean;
   draftSlots: Set<string>;
   dragMode: "add" | "remove" | null;
   setDragMode: (mode: "add" | "remove" | null) => void;
@@ -601,6 +705,7 @@ function GroupView(props: {
     participants,
     availability,
     activeParticipant,
+    isCreator,
     draftSlots,
     dragMode,
     setDragMode,
@@ -625,11 +730,11 @@ function GroupView(props: {
           <h1 className="mt-2 text-3xl font-black leading-tight">{group.title}</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">{group.description || "설명이 없는 약속입니다."}</p>
           <div className="mt-5 flex flex-wrap gap-2 text-xs font-semibold text-slate-700">
-            <span className="rounded-md bg-muted px-2.5 py-1.5">{formatDate(group.dateStart)} - {formatDate(group.dateEnd)}</span>
-            <span className="rounded-md bg-muted px-2.5 py-1.5">{formatAllowedWeekdays(group.allowedWeekdays)}</span>
-            <span className="rounded-md bg-muted px-2.5 py-1.5">{group.timeStart} - {group.timeEnd}</span>
-            <span className="rounded-md bg-muted px-2.5 py-1.5">{group.slotMinutes}분 단위</span>
-            <span className="rounded-md bg-muted px-2.5 py-1.5">마감 {formatDateTime(group.deadline)}</span>
+            <span className="meta-chip">{formatDate(group.dateStart)} - {formatDate(group.dateEnd)}</span>
+            <span className="meta-chip">{formatAllowedWeekdays(group.allowedWeekdays)}</span>
+            <span className="meta-chip">{group.timeStart} - {group.timeEnd}</span>
+            <span className="meta-chip">{group.slotMinutes}분 단위</span>
+            <span className="meta-chip">마감 {formatDateTime(group.deadline)}</span>
           </div>
         </div>
         <div className="grid gap-3">
@@ -649,16 +754,22 @@ function GroupView(props: {
               </Button>
             </div>
           </label>
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={() => updateGroup({ ...group, status: group.status === "closed" ? "open" : "closed" })}>
-              <Check size={16} />
-              {group.status === "closed" ? "다시 열기" : "조율 종료"}
-            </Button>
-            <Button variant="destructive" onClick={() => updateGroup({ ...group, status: "deleted" })}>
-              <Trash2 size={16} />
-              그룹 삭제
-            </Button>
-          </div>
+          {isCreator ? (
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="secondary" onClick={() => updateGroup({ ...group, status: group.status === "closed" ? "open" : "closed" })}>
+                <Check size={16} />
+                {group.status === "closed" ? "다시 열기" : "조율 종료"}
+              </Button>
+              <Button variant="destructive" onClick={() => updateGroup({ ...group, status: "deleted" })}>
+                <Trash2 size={16} />
+                그룹 삭제
+              </Button>
+            </div>
+          ) : (
+            <p className="rounded-[10px] bg-muted px-3 py-2 text-sm font-semibold text-muted-foreground">
+              조율 종료와 삭제는 방을 만든 사람만 할 수 있습니다.
+            </p>
+          )}
         </div>
       </section>
 
@@ -670,12 +781,15 @@ function GroupView(props: {
             <SectionHeading eyebrow="참여" title="내 일정 등록" />
             <label className="label">
               이름 또는 닉네임
-              <Input name="name" required placeholder="예: 지현" />
+              <Input key={activeParticipant?.id ?? "new-participant"} name="name" required placeholder="예: 지현" defaultValue={activeParticipant?.name ?? ""} />
             </label>
             <Button type="submit">
               <UserRound size={16} />
-              닉네임으로 참여
+              {activeParticipant ? "닉네임 수정" : "닉네임으로 참여"}
             </Button>
+            <p className="text-xs font-semibold leading-5 text-muted-foreground">
+              이 브라우저에서는 그룹당 참여자 1명만 등록됩니다.
+            </p>
           </form>
 
           <section className="surface p-5">
@@ -687,7 +801,7 @@ function GroupView(props: {
                   <button
                     key={participant.id}
                     className={cn(
-                      "flex items-center justify-between rounded-md border border-border px-3 py-3 text-left hover:bg-muted",
+                      "flex items-center justify-between rounded-[10px] border border-border px-3 py-3 text-left transition-colors hover:bg-muted",
                       activeParticipant?.id === participant.id && "border-primary bg-primary/10",
                     )}
                     onClick={() => selectParticipant(participant)}
@@ -696,7 +810,7 @@ function GroupView(props: {
                       <strong className="block text-sm">{displayName(participants, participant)}</strong>
                       <span className="text-xs text-muted-foreground">{registered ? "등록 완료" : "미등록"}</span>
                     </span>
-                    <span className={cn("rounded-md px-2 py-1 text-xs font-bold", registered ? "bg-primary text-white" : "bg-amber-100 text-amber-900")}>
+                    <span className={cn("status-badge", registered ? "status-badge-success" : "status-badge-warning")}>
                       {registered ? "완료" : "대기"}
                     </span>
                   </button>
@@ -725,6 +839,7 @@ function GroupView(props: {
             group={group}
             participants={participants}
             recommendations={recommendations}
+            isCreator={isCreator}
             finalize={finalize}
           />
         </section>
@@ -767,13 +882,13 @@ function ScheduleEditor(props: {
       </div>
 
       {!activeParticipant ? (
-        <div className="mt-5 rounded-md border border-dashed border-border bg-muted/50 p-8 text-center text-sm text-muted-foreground">
+        <div className="mt-5 rounded-[10px] border border-dashed border-border bg-muted/50 p-8 text-center text-sm text-muted-foreground">
           먼저 닉네임으로 참여하세요.
         </div>
       ) : (
         <div className="scrollbar-thin mt-5 overflow-auto">
           <div
-            className="grid min-w-max overflow-hidden rounded-md border border-border"
+            className="grid min-w-max overflow-hidden rounded-[10px] border border-border"
             style={{ gridTemplateColumns: `6rem repeat(${dates.length}, minmax(5.75rem, 1fr))` }}
           >
             <div className="slot-cell border-b border-r border-border bg-muted p-2 text-xs font-bold">시간</div>
@@ -830,7 +945,7 @@ function RowSlots(props: {
             aria-label={`${formatDateFull(date)} ${slot.start}-${slot.end} 가능 시간 ${selected ? "선택됨" : "선택 안 됨"}`}
             className={cn(
               "slot-cell border-b border-r border-border text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              selected ? "bg-primary text-primary-foreground" : "bg-white hover:bg-secondary",
+              selected ? "bg-primary text-primary-foreground" : "bg-white hover:bg-muted",
             )}
             onPointerDown={(event) => {
               event.preventDefault();
@@ -860,7 +975,7 @@ function Heatmap({ group, participants, availability }: { group: Group; particip
     <section className="surface p-5">
       <SectionHeading eyebrow="현황" title="전체 가능 시간" />
       <div className="scrollbar-thin mt-5 overflow-auto">
-        <div className="grid min-w-max overflow-hidden rounded-md border border-border" style={{ gridTemplateColumns: `6rem repeat(${dates.length}, minmax(5.75rem, 1fr))` }}>
+        <div className="grid min-w-max overflow-hidden rounded-[10px] border border-border" style={{ gridTemplateColumns: `6rem repeat(${dates.length}, minmax(5.75rem, 1fr))` }}>
           <div className="slot-cell border-b border-r border-border bg-muted p-2 text-xs font-bold">시간</div>
           {dates.map((date) => (
             <div key={date} className="slot-cell border-b border-r border-border bg-muted p-2 text-center text-xs font-bold">{formatDate(date)}</div>
@@ -901,7 +1016,7 @@ function HeatRow({
             className={cn(
               "slot-cell grid place-items-center border-b border-r border-border text-xs font-black",
               ratio >= 0.75 && "bg-primary text-white",
-              ratio >= 0.5 && ratio < 0.75 && "bg-teal-100 text-teal-950",
+              ratio >= 0.5 && ratio < 0.75 && "bg-blue-100 text-blue-950",
               ratio > 0 && ratio < 0.5 && "bg-amber-100 text-amber-950",
               ratio === 0 && "bg-white text-muted-foreground",
             )}
@@ -918,11 +1033,13 @@ function RecommendationList({
   group,
   participants,
   recommendations,
+  isCreator,
   finalize,
 }: {
   group: Group;
   participants: Participant[];
   recommendations: Recommendation[];
+  isCreator: boolean;
   finalize: (slot: Recommendation) => void;
 }) {
   return (
@@ -934,8 +1051,8 @@ function RecommendationList({
           const unavailable = slot.unavailableIds.map((id) => participants.find((item) => item.id === id)).filter(Boolean) as Participant[];
           const finalized = group.finalizedSlot?.key === slot.key;
           return (
-            <article key={slot.key} className={cn("grid gap-3 rounded-md border border-border bg-white p-4 sm:grid-cols-[3rem_1fr_auto]", finalized && "border-primary bg-primary/10")}>
-              <div className="grid h-10 w-10 place-items-center rounded-md bg-slate-950 text-sm font-black text-white">{index + 1}</div>
+            <article key={slot.key} className={cn("grid gap-3 rounded-[12px] border border-border bg-white p-4 sm:grid-cols-[3rem_1fr_auto]", finalized && "border-primary bg-primary/10")}>
+              <div className="grid h-10 w-10 place-items-center rounded-[10px] bg-foreground text-sm font-black text-background">{index + 1}</div>
               <div>
                 <h3 className="font-black">{formatDateFull(slot.date)} {slot.start}-{slot.end}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">
@@ -945,13 +1062,13 @@ function RecommendationList({
                   불가능: {unavailable.length ? unavailable.map((item) => displayName(participants, item)).join(", ") : "없음"}
                 </p>
               </div>
-              <Button variant={finalized ? "default" : "secondary"} onClick={() => finalize(slot)}>
-                {finalized ? "확정됨" : "최종 확정"}
+              <Button variant={finalized ? "default" : "secondary"} disabled={!isCreator} onClick={() => finalize(slot)}>
+                {finalized ? "확정됨" : isCreator ? "최종 확정" : "생성자만 확정"}
               </Button>
             </article>
           );
         })}
-        {!recommendations.length ? <p className="rounded-md border border-dashed border-border bg-muted/50 p-8 text-center text-sm text-muted-foreground">저장된 가능 시간이 생기면 추천 결과가 표시됩니다.</p> : null}
+        {!recommendations.length ? <p className="rounded-[10px] border border-dashed border-border bg-muted/50 p-8 text-center text-sm text-muted-foreground">저장된 가능 시간이 생기면 추천 결과가 표시됩니다.</p> : null}
       </div>
     </section>
   );
@@ -993,6 +1110,30 @@ function normalizeInvite(value: string) {
   const raw = value.trim();
   if (raw.includes("#invite=")) return raw.split("#invite=").pop()?.split("&")[0].toUpperCase() ?? "";
   return raw.toUpperCase();
+}
+
+function loadLocalAccess(): LocalAccess {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOCAL_ACCESS_KEY) || "");
+    return {
+      creators: saved?.creators ?? {},
+      participants: saved?.participants ?? {},
+    };
+  } catch {
+    return emptyLocalAccess;
+  }
+}
+
+function saveLocalAccess(access: LocalAccess) {
+  localStorage.setItem(LOCAL_ACCESS_KEY, JSON.stringify(access));
+}
+
+function participantSlots(availability: Availability[], participantId: string) {
+  return new Set(
+    availability
+      .filter((slot) => slot.participantId === participantId)
+      .map((slot) => slotKey(slot.date, slot.start)),
+  );
 }
 
 function today(offset = 0) {
